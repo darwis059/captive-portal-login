@@ -1,57 +1,96 @@
 import os
 import time
 import requests
+import re
 
-# Load configuration from Environment Variables (passed by Docker)
-PORTAL_URL = os.getenv('PORTAL_URL', 'http://192.168.1.1/login')
-USERNAME = os.getenv('PORTAL_USERNAME', 'your_user')
+# Load credentials from Environment Variables (defaulting username to darwis2)
+USERNAME = os.getenv('PORTAL_USERNAME', 'darwis2')
 PASSWORD = os.getenv('PORTAL_PASSWORD', 'your_pass')
-CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '60')) # Check every 60 seconds
+CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '60'))
 
-# The payload structure you found in Step 1
-LOGIN_PAYLOAD = {
-    'username': USERNAME,
-    'password': PASSWORD,
-    # Add any other required hidden fields you found, like:
-    # 'accept_terms': 'yes'
-}
-
-def check_internet():
-    """Returns True if internet is working, False if intercepted by portal."""
+def check_network_state():
+    """
+    Checks the internet and attempts to extract the captive portal URL using custom regex.
+    Returns: (is_connected: bool, portal_url: str or None)
+    """
     try:
-        # Check a reliable, external URL. Set timeout low to fail fast.
-        response = requests.get('http://clients3.google.com/generate_204', timeout=5)
-        # Google's 204 endpoint returns exactly 204 No Content if connected.
-        # If a captive portal intercepts it, it will usually return a 200 or 302.
-        return response.status_code == 204
-    except requests.RequestException:
-        return False
+        response = requests.get('http://www.gstatic.com/generate_204', timeout=5)
+        
+        if response.status_code == 204:
+            return True, None
+            
+        portal_url = None
+        form_url = None
+        
+        # Check for the specific JavaScript redirect
+        if 'window.location' in response.text:
+            # Your exact regex: window.location="(.*)fg.*";
+            match2 = re.search(r'window\.location="(.*)fg.*";', response.text)
+            match = re.search(r'window\.location="(.*)";', response.text)
+            if match:
+                # Group 1 extracts whatever is captured inside the (.*)
+                portal_url = match.group(1)
 
-def login_to_portal():
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] No internet. Attempting login...")
+            if match2:
+                form_url = match2.group(1)
+                
+        return False, portal_url, form_url
+
+    except requests.RequestException as e:
+        print(f"Network error during check: {e}")
+        return False, None, None
+
+def login_to_portal(portal_url, form_url):
+    if not portal_url:
+        print("Network down, but no valid portal URL detected via regex.")
+        return
+
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting login sequence at: {portal_url}")
+    
     try:
-        # Use a session so cookies persist if the portal requires a multi-step redirect
         with requests.Session() as session:
-            # Step A: (Optional) Get the initial page to grab cookies or CSRF tokens if needed
-            # response = session.get(PORTAL_URL)
             
-            # Step B: Submit the login payload
-            response = session.post(PORTAL_URL, data=LOGIN_PAYLOAD, timeout=10)
+            # --- STEP 1: GET the portal page and extract the magic token ---
+            print("Fetching portal page to extract 'magic' token...")
+            get_response = session.get(portal_url, timeout=10)
             
-            if response.status_code in [200, 302]:
-                print("Login payload sent successfully.")
+            magic_token = ""
+            magic_match = re.search(r'name="magic" value="(.*?)"', get_response.text)
+            
+            if magic_match:
+                magic_token = magic_match.group(1)
+                print(f"Success! Extracted magic token: {magic_token}")
             else:
-                print(f"Login failed with status: {response.status_code}")
+                print("Warning: Could not find 'magic' token. Login might fail.")
+            
+            # --- STEP 2: Construct payload and POST ---
+            # Passing this dictionary to 'data' automatically sets Content-Type to 
+            # application/x-www-form-urlencoded and safely URL-encodes the 4Tredir URL.
+            login_payload = {
+                '4Tredir': 'http://www.gstatic.com/generate_204',
+                'magic': magic_token,
+                'username': USERNAME, 
+                'password': PASSWORD
+            }
+            
+            print("Submitting url-encoded POST request...")
+            post_response = session.post(form_url, data=login_payload, timeout=10)
+            
+            if post_response.status_code in [200, 302]:
+                print("Payload submitted successfully.")
+            else:
+                print(f"Login failed with HTTP Status: {post_response.status_code}")
+
     except Exception as e:
-        print(f"Error during login: {e}")
+        print(f"Error during login sequence: {e}")
 
 if __name__ == "__main__":
     print("Captive Portal Auto-Login Service Started.")
     while True:
-        if not check_internet():
-            login_to_portal()
-            # Wait a moment to let the network stabilize after login
-            time.sleep(10) 
+        is_connected, dynamic_portal_url, dynamic_form_url = check_network_state()
         
-        # Wait before checking again
+        if not is_connected:
+            login_to_portal(dynamic_portal_url, dynamic_form_url)
+            time.sleep(10) # Pause to let the network stabilize
+        
         time.sleep(CHECK_INTERVAL)
