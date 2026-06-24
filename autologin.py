@@ -11,13 +11,13 @@ CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '60'))
 def check_network_state():
     """
     Checks the internet and attempts to extract the captive portal URL using custom regex.
-    Returns: (is_connected: bool, portal_url: str or None)
+    Returns: (is_connected: bool, portal_url: str or None, form_url: str or None)
     """
     try:
         response = requests.get('http://www.gstatic.com/generate_204', timeout=5)
         
         if response.status_code == 204:
-            return True, None
+            return True, None, None
             
         portal_url = None
         form_url = None
