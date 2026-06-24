@@ -32,7 +32,7 @@ def check_network_state():
                 portal_url = match.group(1)
 
             if match2:
-                form_url = match2.group(1)
+                form_url = match2.group(0)
                 
         return False, portal_url, form_url
 
